@@ -12,9 +12,14 @@ class Agent:
         self.cost_tables = {}  # עלויות מול שכנים
         self.inbox = []  # תיבת דואר - הודעות נכנסות באיטרציה הנוכחית
 
-    def add_neighbor(self, neighbor):
-        """הוספת שכן והגדרת עלויות בהתאם לסוג הבעיה."""
+    def add_symmetric_neighbor(self, neighbor):
+        """הוספת שכן עם טבלת עלות סימטרית בין שני הסוכנים."""
+        if neighbor.agent_id in self.neighbors:
+            return  # לא להוסיף פעמיים
+
         self.neighbors.append(neighbor.agent_id)
+        neighbor.neighbors.append(self.agent_id)
+
         table = {}
         for my_val in self.domain:
             for neighbor_val in neighbor.domain:
@@ -23,8 +28,11 @@ class Agent:
                 elif self.problem_type == 'coloring':
                     cost = 0 if my_val != neighbor_val else 100
                 table[(my_val, neighbor_val)] = cost
-        self.cost_tables[neighbor.agent_id] = table
+                table[(neighbor_val, my_val)] = cost  # סימטריה
 
+        # שימור אותה טבלה אצל שני הסוכנים
+        self.cost_tables[neighbor.agent_id] = table
+        neighbor.cost_tables[self.agent_id] = table
 
     def receive_messages(self, messages):
         self.inbox = messages  # כל ההודעות שקיבלתי באיטרציה
@@ -111,8 +119,8 @@ class CreateEnvironment:
         for i in range(len(self.agents)):
             for j in range(i + 1, len(self.agents)):
                 if random.random() < k:
-                    self.agents[i].add_neighbor(self.agents[j])
-                    self.agents[j].add_neighbor(self.agents[i])
+                    self.agents[i].add_symmetric_neighbor(self.agents[j])
+
         print("\n--- רשימת שכנויות ---")
         for agent in self.agents:
             print(f"סוכן {agent.agent_id}: שכנים = {agent.neighbors}")
@@ -139,6 +147,7 @@ class CreateEnvironment:
         plt.title("רשת סוכנים - חיבורים בין סוכנים")
         plt.show()
 
+    @staticmethod
     def draw_colored_graph(agents):
         import matplotlib.pyplot as plt
         import networkx as nx
@@ -153,16 +162,15 @@ class CreateEnvironment:
                 if not G.has_edge(agent.agent_id, neighbor_id):
                     G.add_edge(agent.agent_id, neighbor_id)
 
-        # מיפוי ערך (צבע) לצבעים אמיתיים בציור
         color_mapping = {
-            'Red': 'red',
-            'Blue': 'blue',
-            'Green': 'green',
-            'Pink': 'Pink',
-            'Yellow': 'Yellow'
+            'red': 'red',
+            'blue': 'blue',
+            'green': 'green',
+            'pink': 'pink',
+            'yellow': 'yellow'
         }
 
-        node_colors = [color_mapping.get(agent.value, 'gray') for agent in agents]
+        node_colors = [color_mapping.get(agent.value.lower(), 'gray') for agent in agents]
 
         pos = nx.spring_layout(G, seed=42)
         plt.figure(figsize=(12, 8))
@@ -296,9 +304,14 @@ class Simulator:
 
 
 
-#########################
+
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# פונקציה: להריץ 30 בעיות ולחשב ממוצע על כל איטרציה
 def average_costs_over_runs(p, k=0.25, problem_type='general', max_iterations=50, num_runs=30):
     all_runs_costs = []
 
@@ -313,27 +326,51 @@ def average_costs_over_runs(p, k=0.25, problem_type='general', max_iterations=50
 
     return np.mean(np.array(all_runs_costs), axis=0)
 
-import matplotlib.pyplot as plt
 
-def plot_dsa_comparison(title, k, problem_type='general'):
+# פונקציה: מציירת את הגרף ל-k מסוים
+def plot_dsa_for_k(k, problem_type='general', save_as=None):
     ps = [0.2, 0.7, 1.0]
     max_iterations = 50
 
     plt.figure(figsize=(12, 6))
+
     for p in ps:
         avg_costs = average_costs_over_runs(p=p, k=k, problem_type=problem_type, max_iterations=max_iterations)
         plt.plot(range(1, max_iterations + 1), avg_costs, label=f'DSA-C (p={p})')
 
     plt.xlabel('Iteration')
     plt.ylabel('Average Global Cost')
+
+    if problem_type == 'coloring':
+        title = "DSA-C on Graph Coloring (k=0.1)"
+    else:
+        title = f"DSA-C Comparison (k={k})"
     plt.title(title)
+
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+
+    if save_as:
+        plt.savefig(save_as)  # שמירת גרף לקובץ אם רוצים
     plt.show()
-plot_dsa_comparison("DSA-C Comparison (k=0.25)", k=0.25)
-plot_dsa_comparison("DSA-C Comparison (k=0.75)", k=0.75)
-plot_dsa_comparison("DSA-C on Graph Coloring", k=0.1, problem_type='coloring')
+
+
+# פונקציה ראשית: להריץ הכל
+def run_all_dsa_graphs():
+    # גרף עבור k=0.25
+    plot_dsa_for_k(k=0.25, problem_type='general', save_as="dsa_k025.png")
+
+    # גרף עבור k=0.75
+    plot_dsa_for_k(k=0.75, problem_type='general', save_as="dsa_k075.png")
+
+    # גרף עבור בעיית צביעת גרף
+    plot_dsa_for_k(k=0.1, problem_type='coloring', save_as="dsa_coloring.png")
+
+
+# הפעלה
+run_all_dsa_graphs()
+
 
 
 
