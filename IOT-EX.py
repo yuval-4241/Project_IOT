@@ -85,10 +85,15 @@ import matplotlib.pyplot as plt
 class CreateEnvironment:
     def __init__(self, num_agents=30, domain=None, problem_type='general', seed=123):
         self.num_agents = num_agents
-        self.domain = domain if domain is not None else ['a', 'b', 'c', 'd', 'e']
         self.problem_type = problem_type
         self.seed = seed
         self.agents = []  # ניצור משתנה לשמירת הסוכנים
+        if domain is not None:
+            self.domain = domain
+        elif self.problem_type == 'coloring':
+            self.domain = ['red', 'green', 'blue','pink','yellow']  # דומיין קטן לצביעת גרף (3 צבעים)
+        else:
+            self.domain = ['a', 'b', 'c', 'd', 'e']  # דומיין רגיל
 
     def create_agents(self):
         random.seed(self.seed)
@@ -132,6 +137,37 @@ class CreateEnvironment:
         pos = nx.spring_layout(G, seed=42)
         nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=500, font_size=10)
         plt.title("רשת סוכנים - חיבורים בין סוכנים")
+        plt.show()
+
+    def draw_colored_graph(agents):
+        import matplotlib.pyplot as plt
+        import networkx as nx
+
+        G = nx.Graph()
+
+        for agent in agents:
+            G.add_node(agent.agent_id)
+
+        for agent in agents:
+            for neighbor_id in agent.neighbors:
+                if not G.has_edge(agent.agent_id, neighbor_id):
+                    G.add_edge(agent.agent_id, neighbor_id)
+
+        # מיפוי ערך (צבע) לצבעים אמיתיים בציור
+        color_mapping = {
+            'Red': 'red',
+            'Blue': 'blue',
+            'Green': 'green',
+            'Pink': 'Pink',
+            'Yellow': 'Yellow'
+        }
+
+        node_colors = [color_mapping.get(agent.value, 'gray') for agent in agents]
+
+        pos = nx.spring_layout(G, seed=42)
+        plt.figure(figsize=(12, 8))
+        nx.draw(G, pos, with_labels=True, node_color=node_colors, edge_color='gray', node_size=500, font_size=10)
+        plt.title("גרף צבוע לפי ערכים שנבחרו ע\"י הסוכנים")
         plt.show()
 
 
@@ -196,13 +232,12 @@ class DCOPEnvironment:
 ###############################################################
 
 
-
 class Simulator:
     def __init__(self, environment):
         self.environment = environment
         self.costs_over_time = []
 
-    def run(self, p=0.7, algorithm='DSA', max_iterations=50):
+    def run(self, p, algorithm='DSA', max_iterations=50):
         print("\n--- מתחילים סימולציה ---")
 
         for iteration in range(max_iterations):
@@ -246,34 +281,62 @@ class Simulator:
 
             print(f"💰 עלות כוללת ברשת: {global_cost}")
 
-            if changes == 0:
-                print(f"✅ התכנסות באיטרציה {iteration}")
+            ##if changes == 0:
+              ##  print(f"✅ התכנסות באיטרציה {iteration}")
+                ##break
+        min_iterations_before_checking_convergence = 5  # רוץ לפחות 5 איטרציות לפני בדיקת עצירה
+
+        for iteration in range(max_iterations):
+            # קבלת הודעות, ריצה, שליחת הודעות (כמו שיש אצלך)
+
+            # בסוף איטרציה:
+            if iteration >= min_iterations_before_checking_convergence and changes == 0:
+                print(f"✅ התכנסות הושגה באיטרציה {iteration}")
                 break
 
-    def plot_costs(self):
-        """מצייר את התקדמות העלות לאורך האיטרציות."""
-        plt.plot(self.costs_over_time, marker='o')
-        plt.title('Global Cost Over Iterations')
-        plt.xlabel('Iteration')
-        plt.ylabel('Global Cost')
-        plt.grid(True)
-        plt.show()
 
 
 #########################
-# 1. יצירת סוכנים
-creator = CreateEnvironment(problem_type='general', seed=123)
-agents = creator.create_agents()
-agents = creator.connect_agents(agents, k=0.25)
+import matplotlib.pyplot as plt
+import numpy as np
+def average_costs_over_runs(p, k=0.25, problem_type='general', max_iterations=50, num_runs=30):
+    all_runs_costs = []
 
-# 2. יצירת Environment
-env = DCOPEnvironment(agents)
-creator.draw_graph()
-# 3. יצירת סימולטור והרצה
-simulator = Simulator(env)
-simulator.run(p=0.7, algorithm='DSA')
+    for run in range(num_runs):
+        creator = CreateEnvironment(problem_type=problem_type, seed=run)
+        agents = creator.create_agents()
+        creator.connect_agents(k=k)
+        env = DCOPEnvironment(agents)
+        simulator = Simulator(env)
+        simulator.run(p=p, algorithm='DSA', max_iterations=max_iterations)
+        all_runs_costs.append(simulator.costs_over_time)
 
-# 4. ציור גרף ירידת עלות
-simulator.plot_costs()
+    return np.mean(np.array(all_runs_costs), axis=0)
+
+import matplotlib.pyplot as plt
+
+def plot_dsa_comparison(title, k, problem_type='general'):
+    ps = [0.2, 0.7, 1.0]
+    max_iterations = 50
+
+    plt.figure(figsize=(12, 6))
+    for p in ps:
+        avg_costs = average_costs_over_runs(p=p, k=k, problem_type=problem_type, max_iterations=max_iterations)
+        plt.plot(range(1, max_iterations + 1), avg_costs, label=f'DSA-C (p={p})')
+
+    plt.xlabel('Iteration')
+    plt.ylabel('Average Global Cost')
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+plot_dsa_comparison("DSA-C Comparison (k=0.25)", k=0.25)
+plot_dsa_comparison("DSA-C Comparison (k=0.75)", k=0.75)
+plot_dsa_comparison("DSA-C on Graph Coloring", k=0.1, problem_type='coloring')
+
+
+
+
 
 
