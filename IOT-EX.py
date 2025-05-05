@@ -82,6 +82,42 @@ class Agent:
             })
 
         return outgoing_messages, changed, old_value, self.value
+    def run_mgm(self):
+        outgoing_messages = []
+
+        # 1. שליחת הערך הנוכחי והעלות לשכנים
+        for neighbor_id in self.neighbors:
+            outgoing_messages.append({
+                'sender': self.agent_id,
+                'receiver': neighbor_id,
+                'value': self.value,
+                'cost': self.compute_cost(self.value, self.inbox)
+            })
+
+        # 2. חישוב gain מקומי
+        current_cost = self.compute_cost(self.value, self.inbox)
+        best_value = self.value
+        best_cost = current_cost
+
+        for value in self.domain:
+            if value == self.value:
+                continue
+            cost = self.compute_cost(value, self.inbox)
+            if cost < best_cost:
+                best_value = value
+                best_cost = cost
+
+        gain = current_cost - best_cost
+
+        # 3. החזרת הודעות שיוצגו לסביבה (הסוכן לא מחליף ערך עדיין)
+        decision = {
+            'agent_id': self.agent_id,
+            'gain': gain,
+            'new_value': best_value,
+            'current_value': self.value
+        }
+
+        return outgoing_messages, decision
 
 
 ####################################3
@@ -99,7 +135,7 @@ class CreateEnvironment:
         if domain is not None:
             self.domain = domain
         elif self.problem_type == 'coloring':
-            self.domain = ['red', 'green', 'blue','pink','yellow']  # דומיין קטן לצביעת גרף (3 צבעים)
+            self.domain = ['red', 'green', 'blue']  # דומיין קטן לצביעת גרף (3 צבעים)
         else:
             self.domain = ['a', 'b', 'c', 'd', 'e']  # דומיין רגיל
 
@@ -114,8 +150,10 @@ class CreateEnvironment:
             print(f"סוכן {agent.agent_id}: ערך התחלתי = {agent.value}")
         return self.agents
 
-    def connect_agents(self, k, seed=42):
-        random.seed(seed)
+    def connect_agents(self, k, seed=None):
+        if seed is not None:
+            random.seed(seed)
+
         for i in range(len(self.agents)):
             for j in range(i + 1, len(self.agents)):
                 if random.random() < k:
@@ -166,8 +204,7 @@ class CreateEnvironment:
             'red': 'red',
             'blue': 'blue',
             'green': 'green',
-            'pink': 'pink',
-            'yellow': 'yellow'
+
         }
 
         node_colors = [color_mapping.get(agent.value.lower(), 'gray') for agent in agents]
@@ -193,20 +230,49 @@ class DCOPEnvironment:
             print(f"📬 סוכן {agent_id} קיבל {len(self.mailboxes[agent_id])} הודעות מתוך {len(agent.neighbors)} שכנים")
 
     def run_all_agents(self, p, algorithm='DSA'):
-        """מריץ את כל הסוכנים ומנהל שליחת הודעות"""
+        """מריץ את כל הסוכנים לפי אלגוריתם נבחר"""
+        if algorithm == 'DSA':
+            return self._run_dsa_round(p)
+        elif algorithm == 'MGM':
+            return self._run_mgm_round()
+        else:
+            raise ValueError(f"Unknown algorithm: {algorithm}")
+
+    def _run_dsa_round(self, p):
         new_mailboxes = {agent_id: [] for agent_id in self.agents}
         changes = 0
 
         for agent_id, agent in self.agents.items():
-            if algorithm == 'DSA':
-                outgoing_messages, changed = agent.run_dsa(p)
-            else:
-                raise ValueError(f"Unknown algorithm: {algorithm}")
+            outgoing_messages, changed = agent.run_dsa(p)
+            for msg in outgoing_messages:
+                new_mailboxes[msg['receiver']].append(msg)
+            if changed:
+                changes += 1
 
+        self.mailboxes = new_mailboxes
+        return changes
+
+    def _run_mgm_round(self):
+        new_mailboxes = {agent_id: [] for agent_id in self.agents}
+        changes = 0
+        decisions = {}
+
+        # שלב 1: שליחת הודעות עם ערך ועלות
+        for agent_id, agent in self.agents.items():
+            outgoing_messages, decision = agent.run_mgm()
+            decisions[agent_id] = decision
             for msg in outgoing_messages:
                 new_mailboxes[msg['receiver']].append(msg)
 
-            if changed:
+        # שלב 2: החלפה רק אם gain הכי גבוה בין השכנים
+        for agent_id, agent in self.agents.items():
+            my_gain = decisions[agent_id]['gain']
+            is_highest = all(
+                decisions.get(neighbor_id, {'gain': -1})['gain'] <= my_gain
+                for neighbor_id in agent.neighbors
+            )
+            if is_highest and my_gain > 0:
+                agent.value = decisions[agent_id]['new_value']
                 changes += 1
 
         self.mailboxes = new_mailboxes
@@ -246,61 +312,22 @@ class Simulator:
         self.environment = environment
         self.costs_over_time = []
 
-    def run(self, p, algorithm='DSA', max_iterations=50):
-        print("\n--- מתחילים סימולציה ---")
+    def run(self, p=1.0, algorithm='DSA', max_iterations=50):
+        """
+        מריץ את האלגוריתם הנתון עד התכנסות או עד max_iterations.
+        תומך ב־DSA, MGM, MGM2.
+        אין הדפסות, מיועד להרצות מרובות.
+        """
+        self.costs_over_time = []
+        min_iterations_before_checking_convergence = 5
 
         for iteration in range(max_iterations):
-            print(f"\n>>> איטרציה {iteration} <<<")
-
-            # שלב קבלת הודעות
             self.environment.receive_all_messages()
+            changes = self.environment.run_all_agents(p=p, algorithm=algorithm)
+            cost = self.environment.get_global_cost()
+            self.costs_over_time.append(cost)
 
-            # שלב ריצה
-            changes = 0
-            detailed_changes = []
-
-            new_mailboxes = {agent_id: [] for agent_id in self.environment.agents}
-
-            for agent_id, agent in self.environment.agents.items():
-                if algorithm == 'DSA':
-                    outgoing_messages, changed, old_value, new_value = agent.run_dsa(p)
-                else:
-                    raise ValueError(f"Unknown algorithm: {algorithm}")
-
-                for msg in outgoing_messages:
-                    new_mailboxes[msg['receiver']].append(msg)
-
-                if changed:
-                    changes += 1
-                    detailed_changes.append((agent_id, old_value, new_value))
-
-            self.environment.mailboxes = new_mailboxes
-
-            # שמירת עלות כוללת
-            global_cost = self.environment.get_global_cost()
-            self.costs_over_time.append(global_cost)
-
-            # הדפסה מפורטת
-            if detailed_changes:
-                print(f"🌀 {changes} סוכנים שינו ערך:")
-                for agent_id, old, new in detailed_changes:
-                    print(f"  סוכן {agent_id}: {old} → {new}")
-            else:
-                print("✅ אף סוכן לא שינה ערך - התכנסות!")
-
-            print(f"💰 עלות כוללת ברשת: {global_cost}")
-
-            ##if changes == 0:
-              ##  print(f"✅ התכנסות באיטרציה {iteration}")
-                ##break
-        min_iterations_before_checking_convergence = 5  # רוץ לפחות 5 איטרציות לפני בדיקת עצירה
-
-        for iteration in range(max_iterations):
-            # קבלת הודעות, ריצה, שליחת הודעות (כמו שיש אצלך)
-
-            # בסוף איטרציה:
             if iteration >= min_iterations_before_checking_convergence and changes == 0:
-                print(f"✅ התכנסות הושגה באיטרציה {iteration}")
                 break
 
 
@@ -313,14 +340,14 @@ import matplotlib.pyplot as plt
 
 
 # פונקציה: להריץ 30 בעיות ולחשב ממוצע על כל איטרציה
-def average_costs_over_runs_shared_problems(ps=[0.2,0.7,1.0], k=0.25, problem_type='general', max_iterations=50, num_runs=50):
+def average_costs_over_runs_shared_problems(ps=[0.2,0.7,1.0], k=0.25, problem_type='general', max_iterations=50, num_runs=30):
     results = {p: [] for p in ps}
 
     for run in range(num_runs):
         # יצירת בעיה עם seed קבוע
         creator = CreateEnvironment(problem_type=problem_type, seed=run)
         agents = creator.create_agents()
-        creator.connect_agents(k=k)
+        creator.connect_agents(k=k,seed=run)
 
         for p in ps:
             # שכפול של הסוכנים כדי לשמור על אותה התחלה
@@ -361,7 +388,7 @@ def deepcopy_agents(agents_list):
 # פונקציה: מציירת את הגרף ל-k מסוים
 def plot_dsa_for_k_fixed_problems(k, problem_type='general', save_as=None):
     ps = [ 0.2,0.7,1.0]
-    max_iterations = 50
+    max_iterations = 80
     results = average_costs_over_runs_shared_problems(ps=ps, k=k, problem_type=problem_type, max_iterations=max_iterations)
 
     plt.figure(figsize=(12, 6))
