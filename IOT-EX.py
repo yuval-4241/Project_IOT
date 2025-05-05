@@ -312,60 +312,79 @@ import matplotlib.pyplot as plt
 
 
 # פונקציה: להריץ 30 בעיות ולחשב ממוצע על כל איטרציה
-def average_costs_over_runs(p, k=0.25, problem_type='general', max_iterations=50, num_runs=30):
-    all_runs_costs = []
+def average_costs_over_runs_shared_problems(ps=[0.2, 0.7, 1.0], k=0.25, problem_type='general', max_iterations=50, num_runs=30):
+    results = {p: [] for p in ps}
 
     for run in range(num_runs):
+        # יצירת בעיה עם seed קבוע
         creator = CreateEnvironment(problem_type=problem_type, seed=run)
         agents = creator.create_agents()
         creator.connect_agents(k=k)
-        env = DCOPEnvironment(agents)
-        simulator = Simulator(env)
-        simulator.run(p=p, algorithm='DSA', max_iterations=max_iterations)
-        all_runs_costs.append(simulator.costs_over_time)
 
-    return np.mean(np.array(all_runs_costs), axis=0)
+        for p in ps:
+            # שכפול של הסוכנים כדי לשמור על אותה התחלה
+            copied_agents = deepcopy_agents(agents)  # אתה צריך לממש את זה!
+            env = DCOPEnvironment(copied_agents)
+            sim = Simulator(env)
+            sim.run(p=p, algorithm='DSA', max_iterations=max_iterations)
+            results[p].append(sim.costs_over_time)
+
+    # החזרת ממוצע
+    return {p: np.mean(np.array(results[p]), axis=0) for p in ps}
+
+def deepcopy_agents(agents_list):
+    from copy import deepcopy
+    new_agents = []
+
+    id_to_agent = {}
+
+    for agent in agents_list:
+        new_agent = Agent(
+            agent_id=agent.agent_id,
+            domain=deepcopy(agent.domain)
+        )
+        new_agent.value = agent.value
+        new_agent.cost_tables = deepcopy(agent.cost_tables)
+        id_to_agent[new_agent.agent_id] = new_agent
+        new_agents.append(new_agent)
+
+    # עדכון שכנים לפי מזהים
+    for original_agent in agents_list:
+        copied_agent = id_to_agent[original_agent.agent_id]
+        copied_agent.neighbors = list(original_agent.neighbors)
+
+    return new_agents
+
 
 
 # פונקציה: מציירת את הגרף ל-k מסוים
-def plot_dsa_for_k(k, problem_type='general', save_as=None):
+def plot_dsa_for_k_fixed_problems(k, problem_type='general', save_as=None):
     ps = [0.2, 0.7, 1.0]
     max_iterations = 50
+    results = average_costs_over_runs_shared_problems(ps=ps, k=k, problem_type=problem_type, max_iterations=max_iterations)
 
     plt.figure(figsize=(12, 6))
-
     for p in ps:
-        avg_costs = average_costs_over_runs(p=p, k=k, problem_type=problem_type, max_iterations=max_iterations)
-        plt.plot(range(1, max_iterations + 1), avg_costs, label=f'DSA-C (p={p})')
-
-    plt.xlabel('Iteration')
-    plt.ylabel('Average Global Cost')
-
-    if problem_type == 'coloring':
-        title = "DSA-C on Graph Coloring (k=0.1)"
-    else:
-        title = f"DSA-C Comparison (k={k})"
-    plt.title(title)
-
+        plt.plot(range(1, max_iterations + 1), results[p], label=f'DSA-C (p={p})')
+    plt.xlabel("Iteration")
+    plt.ylabel("Average Global Cost")
+    plt.title(f"DSA-C Comparison on k={k}" if problem_type != 'coloring' else "DSA-C on Graph Coloring (k=0.1)")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
 
     if save_as:
-        plt.savefig(save_as)  # שמירת גרף לקובץ אם רוצים
-    plt.show()
+        plt.savefig(save_as)
+    else:
+        plt.show()
+
 
 
 # פונקציה ראשית: להריץ הכל
 def run_all_dsa_graphs():
-    # גרף עבור k=0.25
-    plot_dsa_for_k(k=0.25, problem_type='general', save_as="dsa_k025.png")
-
-    # גרף עבור k=0.75
-    plot_dsa_for_k(k=0.75, problem_type='general', save_as="dsa_k075.png")
-
-    # גרף עבור בעיית צביעת גרף
-    plot_dsa_for_k(k=0.1, problem_type='coloring', save_as="dsa_coloring.png")
+    plot_dsa_for_k_fixed_problems(k=0.25, problem_type='general')
+    plot_dsa_for_k_fixed_problems(k=0.75, problem_type='general')
+    plot_dsa_for_k_fixed_problems(k=0.1, problem_type='coloring')
 
 
 # הפעלה
