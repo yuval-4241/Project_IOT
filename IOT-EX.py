@@ -187,9 +187,10 @@ class DCOPEnvironment:
         self.mailboxes = {agent.agent_id: [] for agent in agents}
 
     def receive_all_messages(self):
-        """נותן לכל סוכן את ההודעות שהגיעו אליו"""
         for agent_id, agent in self.agents.items():
+            # קבלת ההודעות מהתיבה של הסוכן
             agent.receive_messages(self.mailboxes[agent_id])
+            print(f"📬 סוכן {agent_id} קיבל {len(self.mailboxes[agent_id])} הודעות מתוך {len(agent.neighbors)} שכנים")
 
     def run_all_agents(self, p, algorithm='DSA'):
         """מריץ את כל הסוכנים ומנהל שליחת הודעות"""
@@ -312,7 +313,7 @@ import matplotlib.pyplot as plt
 
 
 # פונקציה: להריץ 30 בעיות ולחשב ממוצע על כל איטרציה
-def average_costs_over_runs_shared_problems(ps=[0.2, 0.7, 1.0], k=0.25, problem_type='general', max_iterations=50, num_runs=30):
+def average_costs_over_runs_shared_problems(ps=[0.2,0.7,1.0], k=0.25, problem_type='general', max_iterations=50, num_runs=50):
     results = {p: [] for p in ps}
 
     for run in range(num_runs):
@@ -359,7 +360,7 @@ def deepcopy_agents(agents_list):
 
 # פונקציה: מציירת את הגרף ל-k מסוים
 def plot_dsa_for_k_fixed_problems(k, problem_type='general', save_as=None):
-    ps = [0.2, 0.7, 1.0]
+    ps = [ 0.2,0.7,1.0]
     max_iterations = 50
     results = average_costs_over_runs_shared_problems(ps=ps, k=k, problem_type=problem_type, max_iterations=max_iterations)
 
