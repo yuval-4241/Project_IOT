@@ -160,8 +160,6 @@ class Agent:
 
         return total_cost
 
-
-
     def phase1_propose(self):
         self.is_proposer = random.choice([True, False])
         if self.is_proposer and self.neighbors:
@@ -178,10 +176,12 @@ class Agent:
                 'to': self.partner_id
             }
             self.outbox.append(message)
+            print(f"[PROPOSAL] Agent {self.agent_id} → {self.partner_id}")
 
     def phase2_respond(self):
         proposals = [msg for msg in self.inbox if msg['type'] == 'proposal']
         if not proposals:
+            print(f"[RESPOND] Agent {self.agent_id} received NO proposals")
             return
 
         selected = random.choice(proposals)
@@ -201,6 +201,8 @@ class Agent:
                 best_assignment, best_cost = val, cost
 
         joint_lr = current_cost - best_cost
+        print(
+            f"[RESPOND] Agent {self.agent_id} → {proposer_id} | Joint LR: {joint_lr:.2f} | Best Assignment: {best_assignment}")
 
         response = {
             'type': 'proposal_response',
@@ -261,22 +263,34 @@ class Agent:
             print(
                 f"[APPROVAL SENT] Agent {self.agent_id} → {self.partner_id} | I am best_in_group = {self.best_in_group}")
 
-    def phase5_change_value(self):
-        # בדיקה אם קיבלתי אישור מהשותף שלי שהוא חושב שאני הכי טוב אצלו
-        partner_approved_me = any(
-            msg['type'] == 'partner_approval' and msg['approved'] and msg['sender'] == self.partner_id
-            for msg in self.inbox
-        )
+            print(
+                f"[BEST GROUP] Agent {self.agent_id} | LR: {my_lr:.2f} | Max neighbor LR: {max(self.lr_from_neighbors.values(), default=0):.2f} | Best: {self.best_in_group}")
 
-        if self.partner_approved and self.best_in_group and partner_approved_me and self.proposed_assignment != self.value:
-            print(f"[CHANGE] Agent {self.agent_id}: {self.value} → {self.proposed_assignment}")
-            self.value = self.proposed_assignment
+    def phase5_change_value(self):
+        if self.partner_id is None:
+            # סוכן בודד – לא בזוג
+            if self.best_in_group and self.compute_local_lr() > 0 and self.proposed_assignment != self.value:
+                print(f"[CHANGE SOLO] Agent {self.agent_id}: {self.value} → {self.proposed_assignment}")
+                self.value = self.proposed_assignment
+            else:
+                print(
+                    f"[NO CHANGE SOLO] Agent {self.agent_id}: best_in_group={self.best_in_group}, LR={self.compute_local_lr():.2f}, same_value={self.proposed_assignment == self.value}")
         else:
-            print(f"[NO CHANGE] Agent {self.agent_id}: "
-                  f"approved_by_me={self.partner_approved}, "
-                  f"best_in_group={self.best_in_group}, "
-                  f"approved_by_partner={partner_approved_me}, "
-                  f"same_value={self.proposed_assignment == self.value}")
+            # סוכן בזוג – כמו קודם
+            partner_approved_me = any(
+                msg['type'] == 'partner_approval' and msg['approved'] and msg['sender'] == self.partner_id
+                for msg in self.inbox
+            )
+
+            if self.is_proposer and self.partner_approved and self.best_in_group and partner_approved_me and self.proposed_assignment != self.value:
+                print(f"[CHANGE] Agent {self.agent_id}: {self.value} → {self.proposed_assignment}")
+                self.value = self.proposed_assignment
+            else:
+                print(f"[NO CHANGE] Agent {self.agent_id}: "
+                      f"approved_by_me={self.partner_approved}, "
+                      f"best_in_group={self.best_in_group}, "
+                      f"approved_by_partner={partner_approved_me}, "
+                      f"same_value={self.proposed_assignment == self.value}")
 
     def compute_local_lr(self):
         # שלב 1: קבלת ערכים של שכנים מתוך value_broadcast בלבד
@@ -648,7 +662,7 @@ def average_costs_over_runs_shared_problems(
     problem_type='general',
     max_iterations=50,
     num_runs=10,
-    algorithms=['DSA', 'MGM', 'MGM2']  # הוספנו את MGM2 כאן
+    algorithms = ['DSA', 'MGM', 'MGM2']
 ):
     # רק אלגוריתמים שתלויים בפרמטר p
     algorithms_with_p = {'DSA'}
@@ -660,7 +674,7 @@ def average_costs_over_runs_shared_problems(
     }
 
     for run in range(num_runs):
-        creator = CreateEnvironment(problem_type=problem_type, seed=run)
+        creator = CreateEnvironment(num_agents=30,problem_type=problem_type, seed=run)
         agents = creator.create_agents()
         creator.connect_agents(k=k, seed=run)
 
