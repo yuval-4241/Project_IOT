@@ -217,20 +217,24 @@ class Agent:
         self.shared_lr = None
         self.proposed_assignment = self.value
 
+        # ניסיון לקבל תגובת שותף להצעה
         responses = [msg for msg in self.inbox if msg['type'] == 'proposal_response']
         if responses:
             response = responses[0]
             self.proposed_assignment = response['best_assignment']
             self.shared_lr = response['joint_lr']
             self.partner_approved = True
+            lr = self.shared_lr
+        else:
+            # אין שותף – נשתמש ב־compute_local_lr שמחשב גם את ההשמה
+            lr = self.compute_local_lr()
+            if hasattr(self, 'last_decision'):
+                self.proposed_assignment = self.last_decision['new_value']
 
-        # חישוב ה־LR שאשלח – או משותף או מקומי
-        lr = self.shared_lr if self.partner_approved else self.compute_local_lr()
-
-        # הדפסת דיבוג
+        # דיבוג
         print(f"[LR] Agent {self.agent_id} sends LR={lr:.2f} (approved={self.partner_approved})")
 
-        # שליחת ה־LR לכל השכנים
+        # שליחת LR לכל השכנים
         for neighbor in self.neighbors:
             self.outbox.append({
                 'type': 'lr_notification',
@@ -275,14 +279,31 @@ class Agent:
                   f"same_value={self.proposed_assignment == self.value}")
 
     def compute_local_lr(self):
-        current_cost = self.compute_cost(self.value, self._get_neighbor_values())
+        # שלב 1: קבלת ערכים של שכנים מתוך value_broadcast בלבד
+        neighbor_messages = [msg for msg in self.inbox if msg.get('type') == 'value_broadcast']
+
+        # שלב 2: חישוב עלות נוכחית
+        current_cost = self.compute_cost(self.value, neighbor_messages)
+        best_value = self.value
         best_cost = current_cost
-        for val in self.domain:
-            if val == self.value:
+
+        # שלב 3: מציאת השמה משופרת (אם קיימת)
+        for value in self.domain:
+            if value == self.value:
                 continue
-            cost = self.compute_cost(val, self._get_neighbor_values())
+            cost = self.compute_cost(value, neighbor_messages)
             if cost < best_cost:
+                best_value = value
                 best_cost = cost
+
+        # שלב 4: שמירה פנימית של החלטה (אופציונלי, כמו ב-MGM)
+        self.last_decision = {
+            'agent_id': self.agent_id,
+            'gain': current_cost - best_cost,
+            'new_value': best_value,
+            'current_value': self.value
+        }
+
         return current_cost - best_cost
 
     def _get_neighbor_values(self):
@@ -503,6 +524,8 @@ class DCOPEnvironment:
                     'value': agent.value,
                     'sender': agent.agent_id
                 })
+
+        agent_last_values = {agent.agent_id: agent.value for agent in self.agents.values()}
 
         # שלב 1: הצעות
         for agent in self.agents.values():
