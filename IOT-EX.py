@@ -130,38 +130,71 @@ class Agent:
 
         return outgoing_messages, changed
 
-    def compute_joint_cost(self, my_value, proposer_neighbors, proposer_cost_tables):
-        total_cost = 0
+    def compute_best_joint_assignment(
+            self_value, self_domain, self_neighbors, self_cost_tables,
+            proposer_value, proposer_domain, proposer_neighbors, proposer_cost_tables,
+            neighbor_values
+    ):
+        """
+        מחשבת את ההשמה המשותפת הטובה ביותר (self × proposer)
+        עבור כל קומבינציה אפשרית של ערכי self ו־proposer,
+        תוך שימוש בערכים הנוכחיים של השכנים.
 
-        # כל השכנים שיכולים להיות רלוונטיים – שלי ושל המציע
-        all_relevant_neighbors = set(self.neighbors) | set(proposer_neighbors)
+        מחזירה את ההשמה שגורמת ל-LR המשותף הגבוה ביותר.
+        """
 
-        for neighbor_id in all_relevant_neighbors:
-            # נשלוף את הערך של השכן מתוך ההודעות בתיבת הדואר שלי
-            neighbor_value = None
-            for msg in self.inbox:
-                if msg['sender'] == neighbor_id and msg.get('type') == 'value_broadcast':
-                    neighbor_value = msg['value']
-                    break
+        def compute_cost_MGM2(val, neighbors, tables):
+            total = 0
+            for neighbor_id, neighbor_val in neighbors.items():
+                cost_table = tables.get(neighbor_id)
+                if cost_table:
+                    total += cost_table.get((val, neighbor_val), 0)
+            return total
 
-            if neighbor_value is None:
-                continue  # אין מידע על ההשמה של השכן
+        def compute_total_cost(val_self, val_proposer):
+            cost_self = compute_cost_MGM2(val_self, self_neighbor_values, self_cost_tables)
+            cost_between = self_cost_tables.get('proposer', {}).get((val_self, val_proposer), 0)
+            cost_self -= cost_between  # נטרול הקשת מהחישוב של self
 
-            # נעדיף קודם את טבלת העלויות שלי
-            if neighbor_id in self.cost_tables:
-                cost_table = self.cost_tables[neighbor_id]
-            # ואם אין – נשתמש בטבלת עלויות שהציע השכן
-            elif neighbor_id in proposer_cost_tables:
-                cost_table = proposer_cost_tables[neighbor_id]
-            else:
-                continue  # אין עלות לשקלל
+            cost_proposer = compute_cost_MGM2(val_proposer, proposer_neighbor_values, proposer_cost_tables)
+            cost_proposer -= cost_between
 
-            total_cost += cost_table.get((my_value, neighbor_value), 0)
+            return cost_self + cost_proposer + cost_between
 
-        return total_cost
+        # פירוק שכנים למילונים רלוונטיים
+        self_neighbor_values = {nid: neighbor_values[nid] for nid in self_neighbors if nid in neighbor_values}
+        proposer_neighbor_values = {nid: neighbor_values[nid] for nid in proposer_neighbors if nid in neighbor_values}
+
+        # עלות נוכחית להשמה הקיימת
+        current_cost = compute_total_cost(self_value, proposer_value)
+
+        # חיפוש קומבינציה אופטימלית
+        best_total_cost = current_cost
+        best_self_value = self_value
+        best_proposer_value = proposer_value
+
+        for val_self in self_domain:
+            for val_proposer in proposer_domain:
+                cost = compute_total_cost(val_self, val_proposer)
+                print(f"cost is = {cost}")
+                if cost < best_total_cost:
+                    best_total_cost = cost
+                    best_self_value = val_self
+                    best_proposer_value = val_proposer
+
+        joint_lr = current_cost - best_total_cost
+
+        print(f"[JOINT ASSIGNMENT] current = {current_cost}, best_cost = {best_total_cost}, joint_lr = {joint_lr:.2f}")
+
+        return {
+            'joint_lr': joint_lr,
+            'best_self_value': best_self_value,
+            'best_proposer_value': best_proposer_value
+        }
 
     def phase1_propose(self):
-        self.is_proposer = random.choice([True, False])
+        PROPOSER_PROBABILITY = 0.5
+        self.is_proposer = random.random() < PROPOSER_PROBABILITY
         if self.is_proposer and self.neighbors:
             self.partner_id = random.choice(self.neighbors)
             message = {
@@ -176,54 +209,60 @@ class Agent:
                 'to': self.partner_id
             }
             self.outbox.append(message)
-            print(f"[PROPOSAL] Agent {self.agent_id} → {self.partner_id}")
+
 
     def phase2_respond(self):
+        self.partner_approved = False
         proposals = [msg for msg in self.inbox if msg['type'] == 'proposal']
         if not proposals:
-            print(f"[RESPOND] Agent {self.agent_id} received NO proposals")
             return
-
-        selected = random.choice(proposals)
+        selected = random.choice(proposals)  # שלב 1
         proposer_id = selected['sender']
-        proposer_value = selected['value']
-        proposer_neighbors = selected['neighbors']
-        proposer_cost_tables = selected['cost_tables']
-
-        # עלות נוכחית מול כל השכנים הרלוונטיים
-        current_cost = self.compute_joint_cost(self.value, proposer_neighbors, proposer_cost_tables)
-
-        # מציאת ההשמה הטובה ביותר
-        best_assignment, best_cost = self.value, current_cost
-        for val in self.domain:
-            cost = self.compute_joint_cost(val, proposer_neighbors, proposer_cost_tables)
-            if cost < best_cost:
-                best_assignment, best_cost = val, cost
-
-        joint_lr = current_cost - best_cost
-        print(
-            f"[RESPOND] Agent {self.agent_id} → {proposer_id} | Joint LR: {joint_lr:.2f} | Best Assignment: {best_assignment}")
-
-        response = {
-            'type': 'proposal_response',
-            'best_assignment': best_assignment,
-            'joint_lr': joint_lr,
-            'sender': self.agent_id,
-            'to': proposer_id
+        neighbor_values = {
+            msg['sender']: msg['value']
+            for msg in self.inbox if msg.get('type') == 'value_broadcast'
         }
-        self.outbox.append(response)
+
+        # שלב 2–3: חישוב LR והשמה אופטימלית
+        result = self.compute_best_joint_assignment(
+
+            self_domain=self.domain,
+            self_neighbors=self.neighbors,
+            self_cost_tables=self.cost_tables,
+            proposer_value=selected['value'],
+            proposer_domain=selected['domain'],
+            proposer_neighbors=selected['neighbors'],
+            proposer_cost_tables=selected['cost_tables'],
+            neighbor_values=neighbor_values  # 🔁 זה היה חסר!
+        )
+        # שלב 4
+        self.partner_id = proposer_id
+        self.proposed_assignment = result['best_self_value']
+        self.shared_lr = result['joint_lr']
+        self.partner_approved = True
+
+        # שלב 5: שליחת תגובה
+        self.outbox.append({
+            'type': 'proposal_response',
+            'sender': self.agent_id,
+            'to': proposer_id,
+            'joint_lr': result['joint_lr'],
+            'best_self_assignment': result['best_self_value'],
+            'best_partner_assignment': result['best_proposer_value']
+        })
 
     def phase3_send_lr(self):
         # איפוס ברירת מחדל
         self.partner_approved = False
         self.shared_lr = None
-        self.proposed_assignment = self.value
+        self.proposed_assignment = None
 
         # ניסיון לקבל תגובת שותף להצעה
         responses = [msg for msg in self.inbox if msg['type'] == 'proposal_response']
         if responses:
             response = responses[0]
-            self.proposed_assignment = response['best_assignment']
+            self.proposed_assignment = response['best_partner_assignment']
+            partner_assignment = response['best_self_assignment']
             self.shared_lr = response['joint_lr']
             self.partner_approved = True
             lr = self.shared_lr
@@ -231,12 +270,11 @@ class Agent:
             # אין שותף – נשתמש ב־compute_local_lr שמחשב גם את ההשמה
             lr = self.compute_local_lr()
             if hasattr(self, 'last_decision'):
-                self.proposed_assignment = self.last_decision['new_value']
+                self.proposed_assignment = self.last_decision.get('new_value', self.value)
 
-        # דיבוג
-        print(f"[LR] Agent {self.agent_id} sends LR={lr:.2f} (approved={self.partner_approved})")
+        # שליחת LR (מתבצעת תמיד)
 
-        # שליחת LR לכל השכנים
+
         for neighbor in self.neighbors:
             self.outbox.append({
                 'type': 'lr_notification',
@@ -245,15 +283,34 @@ class Agent:
                 'to': neighbor
             })
 
+        return self.partner_approved  # מחזיר מידע האם הסוכן בזוג
+
     def phase4_check_if_best(self):
+        # שלב 1: קבלת ה־LR מכל השכנים
         lrs = [msg for msg in self.inbox if msg['type'] == 'lr_notification']
         self.lr_from_neighbors = {msg['sender']: msg['lr'] for msg in lrs}
 
+        # שלב 2: חישוב ה־LR שלי – זוגי אם אני בזוג, אחרת לוקאלי
         my_lr = self.shared_lr if self.partner_approved else self.compute_local_lr()
-        self.best_in_group = my_lr > 0 and my_lr >= max(self.lr_from_neighbors.values(), default=0)
 
-        # שליחת אישור לשותף – אם אני best_in_group ויש לי שותף
-        if self.is_proposer and self.partner_id is not None:
+        # שלב 3: קביעה האם אני הכי טוב בשכונה
+        max_neighbor_lr = max(self.lr_from_neighbors.values(), default=float('-inf'))
+        if my_lr > 0:
+            # שובר שוויון לפי agent_id אם יש כמה עם אותו LR
+            top_agents = [agent for agent, lr in self.lr_from_neighbors.items() if lr == max_neighbor_lr]
+            self.best_in_group = (
+                    my_lr > max_neighbor_lr or
+                    (my_lr == max_neighbor_lr and self.agent_id < min(top_agents + [self.agent_id]))
+            )
+        else:
+            self.best_in_group = False
+
+        # שלב 4: הדפסת סטטוס
+        print(f"[BEST GROUP] Agent {self.agent_id} | "
+              f"LR: {my_lr:.2f} | Max neighbor LR: {max_neighbor_lr:.2f} | Best: {self.best_in_group}")
+
+        # שלב 5: שליחת אישור לפרטנר אם אני מציע
+        if self.partner_id is not None:
             self.outbox.append({
                 'type': 'partner_approval',
                 'approved': self.best_in_group,
@@ -263,34 +320,26 @@ class Agent:
             print(
                 f"[APPROVAL SENT] Agent {self.agent_id} → {self.partner_id} | I am best_in_group = {self.best_in_group}")
 
-            print(
-                f"[BEST GROUP] Agent {self.agent_id} | LR: {my_lr:.2f} | Max neighbor LR: {max(self.lr_from_neighbors.values(), default=0):.2f} | Best: {self.best_in_group}")
-
     def phase5_change_value(self):
-        if self.partner_id is None:
-            # סוכן בודד – לא בזוג
-            if self.best_in_group and self.compute_local_lr() > 0 and self.proposed_assignment != self.value:
-                print(f"[CHANGE SOLO] Agent {self.agent_id}: {self.value} → {self.proposed_assignment}")
-                self.value = self.proposed_assignment
-            else:
-                print(
-                    f"[NO CHANGE SOLO] Agent {self.agent_id}: best_in_group={self.best_in_group}, LR={self.compute_local_lr():.2f}, same_value={self.proposed_assignment == self.value}")
-        else:
-            # סוכן בזוג – כמו קודם
-            partner_approved_me = any(
-                msg['type'] == 'partner_approval' and msg['approved'] and msg['sender'] == self.partner_id
-                for msg in self.inbox
-            )
+        if self.problem_type != 'general':
+            return
 
-            if self.is_proposer and self.partner_approved and self.best_in_group and partner_approved_me and self.proposed_assignment != self.value:
-                print(f"[CHANGE] Agent {self.agent_id}: {self.value} → {self.proposed_assignment}")
+        my_lr = self.shared_lr if self.partner_approved and self.shared_lr is not None else self.compute_local_lr()
+        max_neighbor_lr = max(self.lr_from_neighbors.values(), default=0)
+
+        # מקרה של סוכן בודד (MGM רגיל)
+        if self.partner_id is None:
+            if self.best_in_group and my_lr > 0 and self.proposed_assignment != self.value:
+                print(f"[CHANGE SOLO] Agent {self.agent_id}: {self.value} → {self.proposed_assignment} | "
+                      f"My LR: {my_lr:.2f} | Max neighbor LR: {max_neighbor_lr:.2f}")
                 self.value = self.proposed_assignment
-            else:
-                print(f"[NO CHANGE] Agent {self.agent_id}: "
-                      f"approved_by_me={self.partner_approved}, "
-                      f"best_in_group={self.best_in_group}, "
-                      f"approved_by_partner={partner_approved_me}, "
-                      f"same_value={self.proposed_assignment == self.value}")
+
+        # מקרה של זוג (MGM-2)
+        else:
+            if self.best_in_group and self.partner_approved and my_lr > 0 and self.proposed_assignment != self.value:
+                print(f"[CHANGE PAIR] Agent {self.agent_id}: {self.value} → {self.proposed_assignment} | "
+                      f"My LR: {my_lr:.2f} | Partner approved")
+                self.value = self.proposed_assignment
 
     def compute_local_lr(self):
         # שלב 1: קבלת ערכים של שכנים מתוך value_broadcast בלבד
@@ -459,20 +508,21 @@ class DCOPEnvironment:
         self.agents = {agent.agent_id: agent for agent in agents}
         self.mailboxes = {agent.agent_id: [] for agent in agents}
 
+
     def receive_all_messages(self):
         for agent_id, agent in self.agents.items():
             # קבלת ההודעות מהתיבה של הסוכן
             agent.receive_messages(self.mailboxes[agent_id])
 
 
-    def run_all_agents(self, p, algorithm='DSA'):
+    def run_all_agents(self, p, algorithm='DSA',iteration=0):
         """מריץ את כל הסוכנים לפי אלגוריתם נבחר"""
         if algorithm == 'DSA':
             return self._run_dsa_round(p)
         elif algorithm == 'MGM':
             return self._run_mgm_round()
         elif algorithm == 'MGM2':
-            return self._run_mgm2_round()
+            return self._run_mgm2_round(iteration)
         else:
             raise ValueError(f"Unknown algorithm: {algorithm}")
 
@@ -529,8 +579,10 @@ class DCOPEnvironment:
 
         return changes
 
-    def _run_mgm2_round(self):
+    def _run_mgm2_round(self,iteration):
         # שלב 0: שליחת value נוכחי
+        agent_last_values = {}
+
         for agent in self.agents.values():
             for neighbor_id in agent.neighbors:
                 self.mailboxes[neighbor_id].append({
@@ -538,8 +590,9 @@ class DCOPEnvironment:
                     'value': agent.value,
                     'sender': agent.agent_id
                 })
+            agent_last_values[agent.agent_id] = agent.value
 
-        agent_last_values = {agent.agent_id: agent.value for agent in self.agents.values()}
+        num_pairs=0
 
         # שלב 1: הצעות
         for agent in self.agents.values():
@@ -555,7 +608,9 @@ class DCOPEnvironment:
         # שלב 3: שליחת LR
         self.receive_all_messages()
         for agent in self.agents.values():
-            agent.phase3_send_lr()
+            was_in_pair = agent.phase3_send_lr()
+            if was_in_pair:
+                num_pairs += 1
         self._flush_mail()
 
         # שלב 4: בדיקת אם אני הכי טוב
@@ -568,6 +623,9 @@ class DCOPEnvironment:
         self.receive_all_messages()
         for agent in self.agents.values():
             agent.phase5_change_value()
+
+        print(f"[INFO] Iteration {iteration}: {num_pairs} agents participated in pairs")
+        print(f"[INFO]          → {num_pairs // 2} unique pairs formed")
 
         # חישוב שינויים
         changes = sum(
@@ -622,7 +680,7 @@ class Simulator:
         self.environment = environment
         self.costs_over_time = []
 
-    def run(self, p=1.0, algorithm='DSA', max_iterations=50):
+    def run(self, p=1.0, algorithm='DSA', max_iterations=20):
         """
         מריץ את האלגוריתם הנתון עד התכנסות או עד max_iterations.
         תומך ב־DSA, MGM, MGM2.
@@ -639,12 +697,11 @@ class Simulator:
         for iteration in range(max_iterations):
             self.environment.receive_all_messages()
 
-            changes = self.environment.run_all_agents(p=p, algorithm=algorithm)
+            changes = self.environment.run_all_agents(p=p, algorithm=algorithm,iteration=iteration)
             cost = self.environment.get_global_cost()
             self.costs_over_time.append(cost)
 
-            if iteration >= min_iterations_before_checking_convergence and changes == 0:
-                break
+
 
 
 
@@ -660,7 +717,7 @@ def average_costs_over_runs_shared_problems(
     ps=[0.2, 0.7, 1.0],
     k=0.25,
     problem_type='general',
-    max_iterations=50,
+    max_iterations=20,
     num_runs=10,
     algorithms = ['DSA', 'MGM', 'MGM2']
 ):
@@ -744,7 +801,7 @@ def deepcopy_agents(agents_list):
 def plot_algorithms_for_k_fixed_problems(k, problem_type='general', save_as=None):
     ps = [0.2, 0.7, 1.0]
     algorithms = ['DSA', 'MGM', 'MGM2']  # הוספנו את MGM2
-    max_iterations = 50
+    max_iterations = 20
 
     results = average_costs_over_runs_shared_problems(
         ps=ps,
@@ -786,7 +843,7 @@ def plot_algorithms_for_k_fixed_problems(k, problem_type='general', save_as=None
 def run_all_dcop_algorithms():
     plot_algorithms_for_k_fixed_problems(k=0.25, problem_type='general')
     plot_algorithms_for_k_fixed_problems(k=0.75, problem_type='general')
-    plot_algorithms_for_k_fixed_problems(k=0.1, problem_type='coloring')
+    ##plot_algorithms_for_k_fixed_problems(k=0.1, problem_type='coloring')
 
 # הפעלה
 run_all_dcop_algorithms()
